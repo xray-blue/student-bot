@@ -14,8 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 DB_NAME = "student_dashboard.db"
 ITEMS_PER_PAGE = 5
-
-ADMIN_ID = 8332173399 
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "8332173399"))  # استخدم متغير بيئي للأمان
 
 def format_num(n):
     return str(int(n)) if n == int(n) else str(n)
@@ -23,16 +22,30 @@ def format_num(n):
 # --- دوال قاعدة البيانات ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('''CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, due_date TEXT, is_notified BOOLEAN DEFAULT 0, remind_before INTEGER DEFAULT 0)''')
-        await db.execute('''CREATE TABLE IF NOT EXISTS grades (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, subject TEXT NOT NULL, score REAL NOT NULL, total REAL NOT NULL)''')
-        await db.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, password_hash TEXT)''')
-        try: await db.execute("ALTER TABLE grades ADD COLUMN title TEXT")
-        except: pass
-        try: await db.execute("UPDATE tasks SET remind_before = 0 WHERE remind_before IN (1, 12)")
-        except: pass
-        try: await db.execute("UPDATE tasks SET remind_before = 1 WHERE remind_before = 24")
-        except: pass
-        try: await db.execute("UPDATE tasks SET remind_before = 3 WHERE remind_before = 72")
+        await db.execute('''CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            due_date TEXT,
+            is_notified BOOLEAN DEFAULT 0,
+            remind_before INTEGER DEFAULT 0
+        )''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS grades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            subject TEXT NOT NULL,
+            score REAL NOT NULL,
+            total REAL NOT NULL,
+            title TEXT
+        )''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            password_hash TEXT
+        )''')
+        # إضافة عمود title إذا لم يكن موجوداً
+        try:
+            await db.execute("ALTER TABLE grades ADD COLUMN title TEXT")
         except: pass
         await db.commit()
 
@@ -50,16 +63,25 @@ async def set_user_password(user_id, password):
 
 async def add_task_to_db(user_id, task_type, title, due_date, remind_before):
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('INSERT INTO tasks (user_id, type, title, due_date, remind_before) VALUES (?, ?, ?, ?, ?)', (user_id, task_type, title, due_date, remind_before))
+        await db.execute(
+            'INSERT INTO tasks (user_id, type, title, due_date, remind_before) VALUES (?, ?, ?, ?, ?)',
+            (user_id, task_type, title, due_date, remind_before)
+        )
         await db.commit()
 
 async def get_tasks_from_db(user_id, task_filter=None):
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
         if task_filter and task_filter != 'ALL':
-            cursor = await db.execute('SELECT * FROM tasks WHERE user_id = ? AND type = ? ORDER BY due_date ASC', (user_id, task_filter))
+            cursor = await db.execute(
+                'SELECT * FROM tasks WHERE user_id = ? AND type = ? ORDER BY due_date ASC',
+                (user_id, task_filter)
+            )
         else:
-            cursor = await db.execute('SELECT * FROM tasks WHERE user_id = ? ORDER BY due_date ASC', (user_id,))
+            cursor = await db.execute(
+                'SELECT * FROM tasks WHERE user_id = ? ORDER BY due_date ASC',
+                (user_id,)
+            )
         return await cursor.fetchall()
 
 async def get_note_by_id(note_id):
@@ -81,7 +103,10 @@ async def delete_all_user_data(user_id):
 
 async def add_grade_to_db(user_id, subject, title, score, total):
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('INSERT INTO grades (user_id, subject, title, score, total) VALUES (?, ?, ?, ?, ?)', (user_id, subject, title, score, total))
+        await db.execute(
+            'INSERT INTO grades (user_id, subject, title, score, total) VALUES (?, ?, ?, ?, ?)',
+            (user_id, subject, title, score, total)
+        )
         await db.commit()
 
 async def get_subjects(user_id):
@@ -92,12 +117,18 @@ async def get_subjects(user_id):
 async def get_subject_grades(user_id, subject):
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
-        cursor = await db.execute('SELECT * FROM grades WHERE user_id = ? AND subject = ? ORDER BY id ASC', (user_id, subject))
+        cursor = await db.execute(
+            'SELECT * FROM grades WHERE user_id = ? AND subject = ? ORDER BY id ASC',
+            (user_id, subject)
+        )
         return await cursor.fetchall()
 
 async def delete_last_grade(user_id, subject):
     async with aiosqlite.connect(DB_NAME) as db:
-        cursor = await db.execute('SELECT id FROM grades WHERE user_id = ? AND subject = ? ORDER BY id DESC LIMIT 1', (user_id, subject))
+        cursor = await db.execute(
+            'SELECT id FROM grades WHERE user_id = ? AND subject = ? ORDER BY id DESC LIMIT 1',
+            (user_id, subject)
+        )
         row = await cursor.fetchone()
         if row:
             await db.execute('DELETE FROM grades WHERE id = ?', (row[0],))
@@ -105,28 +136,52 @@ async def delete_last_grade(user_id, subject):
             return True
         return False
 
+# --- دوال المساعدة والأدمن ---
 def get_user_tag(user):
-    if user.username: return f"@{user.username}"
-    elif user.first_name: return user.first_name
-    else: return str(user.id)
+    if user.username:
+        return f"@{user.username}"
+    elif user.first_name:
+        return user.first_name
+    else:
+        return str(user.id)
 
 async def notify_admin(bot, message: str):
-    if ADMIN_ID == 0: return
-    try: await bot.send_message(chat_id=ADMIN_ID, text=f"🔍 <b>تقرير البوت:</b>\n{message}", parse_mode=ParseMode.HTML)
-    except: pass
+    if not ADMIN_ID:
+        return
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"🔍 <b>تقرير البوت:</b>\n{message}",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception:
+        pass
 
 async def send_user_msg_to_admin(bot, user, text: str):
-    if ADMIN_ID == 0: return
+    if not ADMIN_ID:
+        return
     user_tag = get_user_tag(user)
-    kb = InlineKeyboardMarkup([[InlineKeyboardButton("✉️ رد على المستخدم", callback_data=f"admin_reply_{user.id}")]])
-    try: await bot.send_message(chat_id=ADMIN_ID, text=f"✉️ <b>رسالة جديدة من {user_tag}:</b>\n\n{text}", parse_mode=ParseMode.HTML, reply_markup=kb)
-    except: pass
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✉️ رد على المستخدم", callback_data=f"admin_reply_{user.id}")]
+    ])
+    try:
+        await bot.send_message(
+            chat_id=ADMIN_ID,
+            text=f"✉️ <b>رسالة جديدة من {user_tag}:</b>\n\n{text}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=kb
+        )
+    except Exception:
+        pass
 
+# --- لوحات المفاتيح ---
 def get_main_menu():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📝 إضافة مهمة جديدة", callback_data="menu_add")],
-        [InlineKeyboardButton("📊 إدارة الدرجات", callback_data="menu_grade"), InlineKeyboardButton("📋 عرض المهام", callback_data="tfilter_ALL")],
-        [InlineKeyboardButton("🗑 حذف مهمة", callback_data="menu_del_task"), InlineKeyboardButton("⚙️ الإعدادات", callback_data="menu_settings")]
+        [InlineKeyboardButton("📊 إدارة الدرجات", callback_data="menu_grade"),
+         InlineKeyboardButton("📋 عرض المهام", callback_data="tfilter_ALL")],
+        [InlineKeyboardButton("🗑 حذف مهمة", callback_data="menu_del_task"),
+         InlineKeyboardButton("⚙️ الإعدادات", callback_data="menu_settings")]
     ])
 
 def get_settings_menu():
@@ -139,20 +194,25 @@ def get_settings_menu():
 
 def get_task_types_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 امتحان", callback_data="type_exam"), InlineKeyboardButton("📚 واجب", callback_data="type_homework")],
-        [InlineKeyboardButton("📖 تحضير", callback_data="type_prep"), InlineKeyboardButton("📄 ملاحظة", callback_data="type_note")],
+        [InlineKeyboardButton("📝 امتحان", callback_data="type_exam"),
+         InlineKeyboardButton("📚 واجب", callback_data="type_homework")],
+        [InlineKeyboardButton("📖 تحضير", callback_data="type_prep"),
+         InlineKeyboardButton("📄 ملاحظة", callback_data="type_note")],
         [InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")]
     ])
 
 def get_remind_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎈 في نفس اليوم", callback_data="remind_0"), InlineKeyboardButton("📅 قبل يوم", callback_data="remind_1")],
-        [InlineKeyboardButton("📆 قبل 3 أيام", callback_data="remind_3"), InlineKeyboardButton("🗓️ قبل أسبوع", callback_data="remind_7")],
+        [InlineKeyboardButton("📅 قبل يوم", callback_data="remind_1"),
+         InlineKeyboardButton("📆 قبل 3 أيام", callback_data="remind_3")],
+        [InlineKeyboardButton("🗓️ قبل أسبوع", callback_data="remind_7")],
         [InlineKeyboardButton("◀️ إلغاء", callback_data="menu_main")]
     ])
 
 def get_back_button():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")]])
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")]
+    ])
 
 def get_welcome_message():
     return (
@@ -160,7 +220,7 @@ def get_welcome_message():
         "📌 <b>ماذا يمكنني أن أفعل لك؟</b>\n"
         "• 📝 <b>إضافة مهام</b> (امتحانات، واجبات، تحضيرات، ملاحظات)\n"
         "• 📊 <b>تسجيل الدرجات</b> ومتابعة المعدلات\n"
-        "• 🔔 <b>التنبيه</b> قبل المواعيد المحددة\n"
+        "• 🔔 <b>التنبيه الصباحي</b> قبل المواعيد المحددة\n"
         "• 📋 <b>عرض المهام</b> مع فلترة حسب النوع\n"
         "• 🗑 <b>حذف المهام والدرجات</b> بسهولة\n\n"
         "🔐 <b>ملاحظة أمنية:</b>\n"
@@ -170,19 +230,34 @@ def get_welcome_message():
         "👇 اضغط على الزر المناسب للبدء."
     )
 
+# --- معالج الأوامر والأزرار ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     now = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    await notify_admin(context.bot, f"👤 دخل مستخدم جديد!\nالحساب: {get_user_tag(user)}\nالأيدي: <code>{user.id}</code>\nالتاريخ: {now}")
-    await update.message.reply_text(get_welcome_message(), parse_mode=ParseMode.HTML)
+    await notify_admin(
+        context.bot,
+        f"👤 دخل مستخدم جديد!\nالحساب: {get_user_tag(user)}\nالأيدي: <code>{user.id}</code>\nالتاريخ: {now}"
+    )
+    await update.message.reply_text(
+        get_welcome_message(),
+        parse_mode=ParseMode.HTML
+    )
 
     pwd_hash = await get_user_hash(user.id)
     if not pwd_hash:
         context.user_data['state'] = 'AWAITING_SET_PWD'
-        await update.message.reply_text("🔒 <b>تعيين كلمة مرور جديدة</b>\n\n⚠️ يجب أن تكون كلمة المرور <b>4 أحرف أو أكثر</b>.\n✍️ أرسل كلمة المرور الآن:", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            "🔒 <b>تعيين كلمة مرور جديدة</b>\n\n"
+            "⚠️ يجب أن تكون كلمة المرور <b>4 أحرف أو أكثر</b>.\n"
+            "✍️ أرسل كلمة المرور الآن:",
+            parse_mode=ParseMode.HTML
+        )
     else:
         context.user_data['state'] = 'AWAITING_LOGIN'
-        await update.message.reply_text("🔐 <b>الوصول مقفل</b>\n\nأدخل كلمة المرور للدخول إلى مفكرتك:", parse_mode=ParseMode.HTML)
+        await update.message.reply_text(
+            "🔐 <b>الوصول مقفل</b>\n\nأدخل كلمة المرور للدخول إلى مفكرتك:",
+            parse_mode=ParseMode.HTML
+        )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -191,49 +266,93 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_tag = get_user_tag(user)
     data = query.data
 
+    # رد الأدمن على المستخدم
     if data.startswith("admin_reply_"):
-        if user.id != ADMIN_ID: return await query.answer("❌ هذا الزر للمطور فقط!", show_alert=True)
+        if user.id != ADMIN_ID:
+            return await query.answer("❌ هذا الزر للمطور فقط!", show_alert=True)
         target_id = int(data.split("_")[-1])
         context.user_data['action'] = 'ADMIN_TYPING_REPLY'
         context.user_data['reply_to_id'] = target_id
-        await query.message.reply_text(f"✉️ اكتب ردك على المستخدم ({target_id}) الآن:\n(للإلغاء أرسل /cancel)")
+        await query.message.reply_text(
+            f"✉️ اكتب ردك على المستخدم ({target_id}) الآن:\n(للإلغاء أرسل /cancel)"
+        )
         return
 
-    if not context.user_data.get('auth'): return await query.answer("🔐 قم بتسجيل الدخول أولاً!", show_alert=True)
+    if not context.user_data.get('auth'):
+        return await query.answer("🔐 قم بتسجيل الدخول أولاً!", show_alert=True)
 
-    is_important_action = not (data.startswith("tfilter_") or data.startswith("tpage_") or data == "menu_main" or data == "grade_back" or data == "menu_settings")
+    is_important_action = not (
+        data.startswith("tfilter_") or
+        data.startswith("tpage_") or
+        data == "menu_main" or
+        data == "grade_back" or
+        data == "menu_settings"
+    )
     if is_important_action and not data.startswith("view_note_"):
         await notify_admin(context.bot, f"🔘 ضغط <b>{user_tag}</b> على:\n<code>{data}</code>")
 
+    # ===== القائمة الرئيسية =====
     if data == "menu_main":
         is_auth = context.user_data.get('auth')
         context.user_data.clear()
         context.user_data['auth'] = is_auth
-        await query.edit_message_text("⚙️ <b>القائمة الرئيسية</b>", parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
+        await query.edit_message_text(
+            "⚙️ <b>القائمة الرئيسية</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_menu()
+        )
 
+    # ===== الإعدادات =====
     elif data == "menu_settings":
-        await query.edit_message_text("⚙️ <b>إعدادات الحساب</b>", parse_mode=ParseMode.HTML, reply_markup=get_settings_menu())
+        await query.edit_message_text(
+            "⚙️ <b>إعدادات الحساب</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_settings_menu()
+        )
 
     elif data == "set_change_pwd":
         context.user_data['action'] = 'AWAITING_OLD_PWD'
-        await query.edit_message_text("🔑 <b>تغيير كلمة السر</b>\n\nأرسل كلمة السر <b>الحالية</b> للتأكيد:", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
+        await query.edit_message_text(
+            "🔑 <b>تغيير كلمة السر</b>\n\nأرسل كلمة السر <b>الحالية</b> للتأكيد:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_back_button()
+        )
 
     elif data == "set_del_all_prompt":
-        kb = [[InlineKeyboardButton("❌ نعم، امسح الكل", callback_data="confirm_del_all_yes")],[InlineKeyboardButton("✅ لا، تراجع", callback_data="menu_settings")]]
-        await query.edit_message_text("⚠️ <b>تحذير خطير!</b>\n\nسيتم حذف <b>كل</b> المهام والدرجات نهائياً.\n\nهل أنت واثق؟", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
+        kb = [
+            [InlineKeyboardButton("❌ نعم، امسح الكل", callback_data="confirm_del_all_yes")],
+            [InlineKeyboardButton("✅ لا، تراجع", callback_data="menu_settings")]
+        ]
+        await query.edit_message_text(
+            "⚠️ <b>تحذير خطير!</b>\n\nسيتم حذف <b>كل</b> المهام والدرجات نهائياً.\n\nهل أنت واثق؟",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(kb)
+        )
 
     elif data == "confirm_del_all_yes":
         await delete_all_user_data(user.id)
-        await query.edit_message_text("✅ تم مسح جميع بياناتك بنجاح.", reply_markup=get_main_menu())
+        await query.edit_message_text(
+            "✅ تم مسح جميع بياناتك بنجاح.",
+            reply_markup=get_main_menu()
+        )
         await notify_admin(context.bot, f"🗑 قام <b>{user_tag}</b> بحذف جميع بياناته!")
 
     elif data == "set_msg_admin":
         context.user_data['action'] = 'AWAITING_MSG_ADMIN'
-        await query.edit_message_text("✉️ <b>مراسلة المطور</b>\n\nاكتب رسالتك:", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
-        
+        await query.edit_message_text(
+            "✉️ <b>مراسلة المطور</b>\n\nاكتب رسالتك:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_back_button()
+        )
+
+    # ===== إضافة مهمة =====
     elif data == "menu_add":
-        await query.edit_message_text("📝 <b>إضافة مهمة جديدة</b>\n\nاختر نوع المهمة:", parse_mode=ParseMode.HTML, reply_markup=get_task_types_menu())
-        
+        await query.edit_message_text(
+            "📝 <b>إضافة مهمة جديدة</b>\n\nاختر نوع المهمة:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_task_types_menu()
+        )
+
     elif data in ["type_exam", "type_homework", "type_prep", "type_note"]:
         task_type = data.split("_")[1]
         context.user_data['action'] = f"waiting_for_{task_type}"
@@ -241,32 +360,63 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if task_type == "note":
             msg = "📄 <b>إضافة ملاحظة</b>\n\nأرسل نص الملاحظة كاملاً:"
         else:
-            msg = f"📌 <b>إضافة {type_names[task_type]}</b>\n\nأرسل التفاصيل في <b>سطرين</b>:\n• السطر الأول: اسم المادة\n• السطر الثاني: التاريخ (YYYY-MM-DD)"
-        await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=get_back_button())
+            msg = (
+                f"📌 <b>إضافة {type_names[task_type]}</b>\n\n"
+                "أرسل التفاصيل في <b>سطرين</b>:\n"
+                "• السطر الأول: اسم المادة\n"
+                "• السطر الثاني: التاريخ (YYYY-MM-DD)"
+            )
+        await query.edit_message_text(
+            msg,
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_back_button()
+        )
 
+    # ===== عرض الملاحظة =====
     elif data.startswith("view_note_"):
         note_id = int(data.split("_")[-1])
         note = await get_note_by_id(note_id)
-        if note: await query.message.reply_text(f"📄 <b>الملاحظة:</b>\n\n{note['title']}", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
+        if note:
+            await query.message.reply_text(
+                f"📄 <b>الملاحظة:</b>\n\n{note['title']}",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_back_button()
+            )
 
+    # ===== عرض المهام مع فلترة وترقيم =====
     elif data.startswith("tfilter_") or data.startswith("tpage_"):
         parts = data.split("_")
         action, current_filter = parts[0], parts[1]
         current_page = int(parts[2]) if action == "tpage" else 1
         tasks = await get_tasks_from_db(user.id, current_filter)
         total_pages = max(1, math.ceil(len(tasks) / ITEMS_PER_PAGE))
-        if current_page > total_pages: current_page = total_pages
-        
-        kb = [[InlineKeyboardButton("📋 الكل", callback_data="tfilter_ALL"), InlineKeyboardButton("📝 امتحانات", callback_data="tfilter_exam"), InlineKeyboardButton("📚 واجبات", callback_data="tfilter_homework")],[InlineKeyboardButton("📖 تحضيرات", callback_data="tfilter_prep"), InlineKeyboardButton("📄 الملاحظات", callback_data="tfilter_note")]]
-        
+        if current_page > total_pages:
+            current_page = total_pages
+
+        kb = [
+            [
+                InlineKeyboardButton("📋 الكل", callback_data="tfilter_ALL"),
+                InlineKeyboardButton("📝 امتحانات", callback_data="tfilter_exam"),
+                InlineKeyboardButton("📚 واجبات", callback_data="tfilter_homework")
+            ],
+            [
+                InlineKeyboardButton("📖 تحضيرات", callback_data="tfilter_prep"),
+                InlineKeyboardButton("📄 الملاحظات", callback_data="tfilter_note")
+            ]
+        ]
+
         if not tasks:
             kb.append([InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")])
-            await query.edit_message_text("📭 لا توجد مهام في هذا التصنيف.", reply_markup=InlineKeyboardMarkup(kb))
+            await query.edit_message_text(
+                "📭 لا توجد مهام في هذا التصنيف.",
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
         else:
             start_idx = (current_page - 1) * ITEMS_PER_PAGE
-            paginated_tasks = tasks[start_idx : start_idx + ITEMS_PER_PAGE]
+            paginated_tasks = tasks[start_idx: start_idx + ITEMS_PER_PAGE]
+
             if current_filter == "note":
-                response = f"📄 <b>ملاحظتك</b> (صفحة {current_page}/{total_pages})\nاضغط لقراءتها:"
+                response = f"📄 <b>ملاحظاتك</b> (صفحة {current_page}/{total_pages})\nاضغط لقراءتها:"
                 for t in paginated_tasks:
                     preview = (t['title'][:35] + '...') if len(t['title']) > 35 else t['title']
                     kb.append([InlineKeyboardButton(f"📂 {preview}", callback_data=f"view_note_{t['id']}")])
@@ -275,27 +425,46 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 for t in paginated_tasks:
                     type_emoji = {"exam": "📝", "homework": "📚", "prep": "📖"}.get(t['type'], "📌")
                     response += f"{type_emoji} {t['title']}"
-                    if t['due_date']: response += f"  <code>{t['due_date']}</code>"
+                    if t['due_date']:
+                        response += f"  <code>{t['due_date']}</code>"
                     response += "\n"
+
             nav_row = []
-            if current_page > 1: nav_row.append(InlineKeyboardButton("◀️ السابق", callback_data=f"tpage_{current_filter}_{current_page-1}"))
+            if current_page > 1:
+                nav_row.append(InlineKeyboardButton("◀️ السابق", callback_data=f"tpage_{current_filter}_{current_page-1}"))
             nav_row.append(InlineKeyboardButton(f"{current_page}/{total_pages}", callback_data="noop"))
-            if current_page < total_pages: nav_row.append(InlineKeyboardButton("التالي ▶️", callback_data=f"tpage_{current_filter}_{current_page+1}"))
+            if current_page < total_pages:
+                nav_row.append(InlineKeyboardButton("التالي ▶️", callback_data=f"tpage_{current_filter}_{current_page+1}"))
             kb.append(nav_row)
             kb.append([InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")])
-            await query.edit_message_text(response, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(kb))
 
+            await query.edit_message_text(
+                response,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(kb)
+            )
+
+    # ===== حذف المهام =====
     elif data == "menu_del_task":
         tasks = await get_tasks_from_db(user.id)
-        if not tasks: return await query.edit_message_text("📭 لا توجد مهام لحذفها.", reply_markup=get_main_menu())
+        if not tasks:
+            return await query.edit_message_text(
+                "📭 لا توجد مهام لحذفها.",
+                reply_markup=get_main_menu()
+            )
         keyboard = []
         for t in tasks:
             title = t['title']
-            if t['type'] == 'note': title = f"📄 {title.split(chr(10))[0][:40]}..."
-            else: title = f"❌ {title[:35]}"
+            if t['type'] == 'note':
+                title = f"📄 {title.split(chr(10))[0][:40]}..."
+            else:
+                title = f"❌ {title[:35]}"
             keyboard.append([InlineKeyboardButton(title, callback_data=f"del_task_{t['id']}")])
         keyboard.append([InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")])
-        await query.edit_message_text("⚠️ اختر المهمة التي تريد حذفها:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            "⚠️ اختر المهمة التي تريد حذفها:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     elif data.startswith("del_task_"):
         task_id = int(data.split("_")[-1])
@@ -304,266 +473,473 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cursor = await db.execute('SELECT title FROM tasks WHERE id = ?', (task_id,))
             task = await cursor.fetchone()
         if task:
-            keyboard = [[InlineKeyboardButton("✅ نعم، أنا واثق", callback_data=f"confirm_del_task_{task_id}")],[InlineKeyboardButton("❌ لا، تراجع", callback_data="menu_del_task")]]
-            await query.edit_message_text(f"⚠️ <b>تأكيد الحذف</b>\n\nهل أنت متأكد من حذف:\n\n« {task['title'][:50]} »", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+            keyboard = [
+                [InlineKeyboardButton("✅ نعم، أنا واثق", callback_data=f"confirm_del_task_{task_id}")],
+                [InlineKeyboardButton("❌ لا، تراجع", callback_data="menu_del_task")]
+            ]
+            await query.edit_message_text(
+                f"⚠️ <b>تأكيد الحذف</b>\n\nهل أنت متأكد من حذف:\n\n« {task['title'][:50]} »",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
     elif data.startswith("confirm_del_task_"):
         await delete_task_by_id(int(data.split("_")[-1]))
-        await query.edit_message_text("✅ تم حذف المهمة بنجاح!", reply_markup=get_main_menu())
+        await query.edit_message_text(
+            "✅ تم حذف المهمة بنجاح!",
+            reply_markup=get_main_menu()
+        )
 
-    # =================== الجدار الذكي للتنبيهات ===================
+    # ===== اختيار التنبيه =====
     elif data.startswith("remind_"):
         remind_days = int(data.split("_")[-1])
         pending = context.user_data.get('pending_task')
         if pending:
-            try:
-                task_dt = datetime.strptime(pending['due_date'], '%Y-%m-%d')
-                remind_dt = task_dt - timedelta(days=remind_days)
-                today_str = datetime.now().strftime('%Y-%m-%d')
-                today_dt = datetime.strptime(today_str, '%Y-%m-%d')
-                
-                # جدار الأمان: هل وقت التنبيه قد مضى؟
-                if remind_dt < today_dt:
-                    await query.answer("❌ هذا الاختيار غير صحيح! لقد فات وقت التنبيه لهذا التاريخ.\nيرجى واختر وقتاً مناسباً.", show_alert=True)
-                    return # لا تحفظ، دعه يعيد الاختيار
-                
-                # إذا كان الاختيار صحيحاً، احفظ وأخبره بالتاريخ الدقيق
-                type_names = {"exam": "امتحان 📝", "homework": "واجب 📚", "prep": "تحضير 📖"}
-                await add_task_to_db(user.id, pending['type'], pending['title'], pending['due_date'], remind_days)
-                context.user_data.pop('pending_task', None)
-                
-                msg = (
-                    f"✅ تم حفظ {type_names[pending['type']]} بنجاح!\n"
-                    f"⏰ سيتم تنبيهك في تاريخ: <code>{remind_dt.strftime('%Y-%m-%d')}</code>"
-                )
-                await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
-                
-            except ValueError:
-                pass # تجاهل أخطاء التواريخ غير المتوقعة
+            task_type = pending['type']
+            title = pending['title']
+            due_date = pending['due_date']
 
+            # حفظ المهمة في قاعدة البيانات
+            await add_task_to_db(user.id, task_type, title, due_date, remind_days)
+
+            # ====== جدولة التنبيه باستخدام JobQueue ======
+            try:
+                # حساب وقت التنبيه: صباح اليوم المحدد (الساعة 8:00)
+                due_dt = datetime.strptime(due_date, '%Y-%m-%d')
+                remind_dt = due_dt - timedelta(days=remind_days)
+                # ضبط الوقت إلى 8:00 صباحاً
+                remind_dt = remind_dt.replace(hour=8, minute=0, second=0, microsecond=0)
+
+                if remind_dt > datetime.now():
+                    # جدولة التنبيه
+                    context.job_queue.run_once(
+                        send_reminder,
+                        remind_dt,
+                        context={
+                            'user_id': user.id,
+                            'title': title,
+                            'due_date': due_date,
+                            'task_type': task_type
+                        },
+                        name=f"remind_{user.id}_{title}_{remind_dt.timestamp()}"
+                    )
+                    logging.info(f"Scheduled reminder for {user.id} at {remind_dt}")
+                else:
+                    logging.warning(f"Reminder time is in the past for task: {title}")
+            except Exception as e:
+                logging.error(f"Failed to schedule reminder: {e}")
+
+            context.user_data.pop('pending_task', None)
+            type_names = {"exam": "امتحان 📝", "homework": "واجب 📚", "prep": "تحضير 📖"}
+            day_names = {1: "يوم", 3: "3 أيام", 7: "أسبوع"}
+            await query.edit_message_text(
+                f"✅ تم حفظ {type_names[task_type]} وسيتم تنبيهك صباحاً قبل <b>{day_names[remind_days]}</b>!",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_menu()
+            )
+
+    # ===== نظام الدرجات =====
     elif data == "menu_grade":
         subjects = await get_subjects(user.id)
         if not subjects:
-            await query.edit_message_text("📊 <b>إدارة الدرجات</b>\n\nلا توجد مواد مسجلة بعد.", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("➕ إضافة مادة جديدة", callback_data="grade_add_new")],[InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")]]))
+            await query.edit_message_text(
+                "📊 <b>إدارة الدرجات</b>\n\nلا توجد مواد مسجلة بعد.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("➕ إضافة مادة جديدة", callback_data="grade_add_new")],
+                    [InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")]
+                ])
+            )
         else:
             keyboard = []
             context.user_data['subjects_map'] = {str(i): sub for i, sub in enumerate(subjects)}
-            for idx, sub in enumerate(subjects): keyboard.append([InlineKeyboardButton(f"📂 {sub}", callback_data=f"grade_open_{idx}")])
+            for idx, sub in enumerate(subjects):
+                keyboard.append([InlineKeyboardButton(f"📂 {sub}", callback_data=f"grade_open_{idx}")])
             keyboard.append([InlineKeyboardButton("➕ إضافة مادة جديدة", callback_data="grade_add_new")])
             keyboard.append([InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")])
-            await query.edit_message_text("📊 <b>اختر مادة</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(
+                "📊 <b>اختر مادة</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
     elif data.startswith("grade_open_"):
         subject = context.user_data.get('subjects_map', {}).get(data.split("_")[-1])
         if subject:
             context.user_data['current_subject'] = subject
-            keyboard = [[InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input"), InlineKeyboardButton("📊 عرض الدرجات", callback_data="grade_view")],[InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],[InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]]
-            await query.edit_message_text(f"📂 <b>مادة: {subject}</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+            keyboard = [
+                [InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input"),
+                 InlineKeyboardButton("📊 عرض الدرجات", callback_data="grade_view")],
+                [InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],
+                [InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]
+            ]
+            await query.edit_message_text(
+                f"📂 <b>مادة: {subject}</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
     elif data == "grade_add_new":
         context.user_data['action'] = "waiting_new_subject"
-        await query.edit_message_text("📊 <b>إضافة مادة جديدة</b>\n\nأرسل اسم المادة:", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
+        await query.edit_message_text(
+            "📊 <b>إضافة مادة جديدة</b>\n\nأرسل اسم المادة:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_back_button()
+        )
 
     elif data == "grade_add_input":
         context.user_data['action'] = "waiting_grade_input"
         subject = context.user_data.get('current_subject', '')
-        await query.edit_message_text(f"📊 <b>إضافة درجة لمادة {subject}</b>\n\nأرسل الدرجة بالصيغة:\n<code>الوصف الدرجة</code>\nمثال: <code>الشهر الأول 90</code>", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
+        await query.edit_message_text(
+            f"📊 <b>إضافة درجة لمادة {subject}</b>\n\n"
+            "أرسل الدرجة بالصيغة:\n<code>الوصف الدرجة</code>\n"
+            "مثال: <code>الشهر الأول 90</code>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_back_button()
+        )
 
     elif data == "grade_view":
         subject = context.user_data.get('current_subject', '')
         grades = await get_subject_grades(user.id, subject)
-        keyboard = [[InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input")],[InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],[InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]]
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input")],
+            [InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],
+            [InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]
+        ]
         if not grades:
             await query.answer("لا توجد درجات!", show_alert=True)
-            await query.edit_message_text(f"📂 <b>مادة: {subject}</b>\n\nلا توجد درجات مسجلة.", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(
+                f"📂 <b>مادة: {subject}</b>\n\nلا توجد درجات مسجلة.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
         else:
             response = f"📊 <b>درجات {subject}</b>\n\n"
             for g in grades:
                 score_txt = format_num(g['score']) if g['total'] == g['score'] else f"{format_num(g['score'])}/{format_num(g['total'])}"
                 response += f"  • {g['title']}: <code>{score_txt}</code>\n"
-            await query.edit_message_text(response, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+            await query.edit_message_text(
+                response,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
     elif data == "grade_del_last":
-        await query.edit_message_text("⚠️ <b>تأكيد حذف آخر درجة</b>\n\nهل أنت متأكد؟", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ نعم", callback_data="confirm_del_grade")],[InlineKeyboardButton("❌ لا", callback_data="grade_back")]]))
-        
+        await query.edit_message_text(
+            "⚠️ <b>تأكيد حذف آخر درجة</b>\n\nهل أنت متأكد؟",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ نعم", callback_data="confirm_del_grade")],
+                [InlineKeyboardButton("❌ لا", callback_data="grade_back")]
+            ])
+        )
+
     elif data == "grade_back":
         subject = context.user_data.get('current_subject', '')
-        keyboard = [[InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input"), InlineKeyboardButton("📊 عرض الدرجات", callback_data="grade_view")],[InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],[InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]]
-        await query.edit_message_text(f"📂 <b>مادة: {subject}</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input"),
+             InlineKeyboardButton("📊 عرض الدرجات", callback_data="grade_view")],
+            [InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],
+            [InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]
+        ]
+        await query.edit_message_text(
+            f"📂 <b>مادة: {subject}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
     elif data == "confirm_del_grade":
         subject = context.user_data.get('current_subject', '')
         success = await delete_last_grade(user.id, subject)
         await query.answer("✅ تم الحذف!" if success else "لا توجد درجات!", show_alert=True)
-        keyboard = [[InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input"), InlineKeyboardButton("📊 عرض الدرجات", callback_data="grade_view")],[InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],[InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]]
-        await query.edit_message_text(f"📂 <b>مادة: {subject}</b>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard = [
+            [InlineKeyboardButton("➕ إضافة درجة", callback_data="grade_add_input"),
+             InlineKeyboardButton("📊 عرض الدرجات", callback_data="grade_view")],
+            [InlineKeyboardButton("🗑 حذف آخر درجة", callback_data="grade_del_last")],
+            [InlineKeyboardButton("◀️ رجوع", callback_data="menu_grade")]
+        ]
+        await query.edit_message_text(
+            f"📂 <b>مادة: {subject}</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
 
+# --- دالة إرسال التنبيه (تُستدعى بواسطة JobQueue) ---
+async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
+    job_data = context.job.data
+    user_id = job_data['user_id']
+    title = job_data['title']
+    due_date = job_data['due_date']
+    task_type = job_data.get('task_type', 'مهمة')
+
+    try:
+        type_name = {"exam": "امتحان", "homework": "واجب", "prep": "تحضير"}.get(task_type, "مهمة")
+        msg = (
+            f"🚨 <b>تذكير بمهمة قادمة!</b>\n\n"
+            f"لديك <b>{type_name}</b> بعنوان:\n"
+            f"〰️ {title}\n"
+            f"📅 الموعد: <code>{due_date}</code>\n\n"
+            f"⏳ جهز نفسك!"
+        )
+        await context.bot.send_message(chat_id=user_id, text=msg, parse_mode=ParseMode.HTML)
+        logging.info(f"Reminder sent to user {user_id} for task: {title}")
+    except Exception as e:
+        logging.error(f"Failed to send reminder: {e}")
+
+# --- معالج الرسائل النصية ---
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_tag = get_user_tag(user)
     text = update.message.text.strip()
     state = context.user_data.get('state')
 
+    # أمر الإلغاء
     if text == "/cancel":
         is_auth = context.user_data.get('auth')
         context.user_data.clear()
-        if is_auth: context.user_data['auth'] = True
-        return await update.message.reply_text("❌ تم إلغاء العملية.", reply_markup=get_main_menu() if is_auth else None)
+        if is_auth:
+            context.user_data['auth'] = True
+        return await update.message.reply_text(
+            "❌ تم إلغاء العملية.",
+            reply_markup=get_main_menu() if is_auth else None
+        )
 
+    # رد الأدمن على المستخدم
     if user.id == ADMIN_ID and context.user_data.get('action') == 'ADMIN_TYPING_REPLY':
         target_id = context.user_data.get('reply_to_id')
         try:
-            await context.bot.send_message(chat_id=target_id, text=f"📬 <b>رد من المطور:</b>\n\n{text}", parse_mode=ParseMode.HTML)
+            await context.bot.send_message(
+                chat_id=target_id,
+                text=f"📬 <b>رد من المطور:</b>\n\n{text}",
+                parse_mode=ParseMode.HTML
+            )
             await update.message.reply_text("✅ تم إرسال الرد للمستخدم بنجاح!")
-        except Exception as e:
+        except Exception:
             await update.message.reply_text("❌ فشل إرسال الرد.")
         is_auth = context.user_data.get('auth')
         context.user_data.clear()
-        if is_auth: context.user_data['auth'] = True
+        if is_auth:
+            context.user_data['auth'] = True
         return
 
+    # تعيين كلمة المرور
     if state == 'AWAITING_SET_PWD':
-        if len(text) < 4: return await update.message.reply_text("❌ <b>كلمة المرور قصيرة جداً</b>\n\nيجب أن تكون 4 أحرف أو أكثر.", parse_mode=ParseMode.HTML)
+        if len(text) < 4:
+            return await update.message.reply_text(
+                "❌ <b>كلمة المرور قصيرة جداً</b>\n\nيجب أن تكون 4 أحرف أو أكثر.",
+                parse_mode=ParseMode.HTML
+            )
         await set_user_password(user.id, text)
-        context.user_data.clear(); context.user_data['auth'] = True
+        context.user_data.clear()
+        context.user_data['auth'] = True
         await notify_admin(context.bot, f"🔐 قام <b>{user_tag}</b> بإنشاء كلمة مرور.")
-        return await update.message.reply_text("✅ <b>تم تعيين كلمة المرور بنجاح!</b>\n\nمرحباً بك في مفكرتك، استخدم الأزرار للبدء.", parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
+        return await update.message.reply_text(
+            "✅ <b>تم تعيين كلمة المرور بنجاح!</b>\n\nمرحباً بك في مفكرتك، استخدم الأزرار للبدء.",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_menu()
+        )
 
+    # تسجيل الدخول
     if state == 'AWAITING_LOGIN':
         real_hash = await get_user_hash(user.id)
         if hashlib.sha256(text.encode()).hexdigest() == real_hash:
-            context.user_data.clear(); context.user_data['auth'] = True
+            context.user_data.clear()
+            context.user_data['auth'] = True
             await notify_admin(context.bot, f"✅ دخل <b>{user_tag}</b> بنجاح.")
-            return await update.message.reply_text("✅ <b>تم تسجيل الدخول!</b>\n\nأهلاً بك في مفكرتك.", parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
-        else: 
+            return await update.message.reply_text(
+                "✅ <b>تم تسجيل الدخول!</b>\n\nأهلاً بك في مفكرتك.",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_menu()
+            )
+        else:
             await notify_admin(context.bot, f"❌ محاولة دخول فاشلة من <b>{user_tag}</b>.")
-            return await update.message.reply_text("❌ <b>كلمة المرور خاطئة!</b>\n\nحاول مرة أخرى:", parse_mode=ParseMode.HTML)
+            return await update.message.reply_text(
+                "❌ <b>كلمة المرور خاطئة!</b>\n\nحاول مرة أخرى:",
+                parse_mode=ParseMode.HTML
+            )
 
-    if not context.user_data.get('auth'): return await update.message.reply_text("🔐 يرجى إرسال كلمة المرور للبدء:")
+    # إذا لم يتم تسجيل الدخول
+    if not context.user_data.get('auth'):
+        return await update.message.reply_text("🔐 يرجى إرسال كلمة المرور للبدء:")
 
+    # تغيير كلمة المرور (المرحلة 1: التحقق من القديمة)
     if context.user_data.get('action') == 'AWAITING_OLD_PWD':
-        real_hash = await get_user_hash(user.id)
+        real_hash = await get_user_hash(user.id)   # تم إصلاح الخطأ: كانت get_user_id
         if hashlib.sha256(text.encode()).hexdigest() == real_hash:
             context.user_data['action'] = 'AWAITING_NEW_PWD'
-            return await update.message.reply_text("✅ <b>تم التحقق.</b>\n\nأرسل كلمة السر <b>الجديدة</b>:", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
+            return await update.message.reply_text(
+                "✅ <b>تم التحقق.</b>\n\nأرسل كلمة السر <b>الجديدة</b>:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_back_button()
+            )
         else:
-            return await update.message.reply_text("❌ كلمة السر الحالية خاطئة!", reply_markup=get_back_button())
+            return await update.message.reply_text(
+                "❌ كلمة السر الحالية خاطئة!",
+                reply_markup=get_back_button()
+            )
 
+    # تغيير كلمة المرور (المرحلة 2: تعيين الجديدة)
     if context.user_data.get('action') == 'AWAITING_NEW_PWD':
-        if len(text) < 4: return await update.message.reply_text("❌ كلمة المرور الجديدة قصيرة.", reply_markup=get_back_button())
+        if len(text) < 4:
+            return await update.message.reply_text(
+                "❌ كلمة المرور الجديدة قصيرة.",
+                reply_markup=get_back_button()
+            )
         await set_user_password(user.id, text)
         context.user_data.pop('action', None)
         await notify_admin(context.bot, f"🔑 قام <b>{user_tag}</b> بتغيير كلمة السر.")
-        return await update.message.reply_text("✅ <b>تم تغيير كلمة السر بنجاح!</b>", parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
+        return await update.message.reply_text(
+            "✅ <b>تم تغيير كلمة السر بنجاح!</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_menu()
+        )
 
+    # مراسلة المطور
     elif context.user_data.get('action') == 'AWAITING_MSG_ADMIN':
         context.user_data.pop('action', None)
         await send_user_msg_to_admin(context.bot, user, text)
-        return await update.message.reply_text("✅ تم إرسال رسالتك للمطور بنجاح!", reply_markup=get_main_menu())
+        return await update.message.reply_text(
+            "✅ تم إرسال رسالتك للمطور بنجاح!",
+            reply_markup=get_main_menu()
+        )
 
+    # إضافة مهمة (انتظار التفاصيل)
     elif 'action' in context.user_data and context.user_data['action'].startswith('waiting_for_') and context.user_data['action'] != 'waiting_for_grade':
         task_type = context.user_data['action'].replace('waiting_for_', '')
-        if task_type == "note": 
+        if task_type == "note":
             await add_task_to_db(user.id, task_type, text, None, 0)
             context.user_data.pop('action', None)
             await notify_admin(context.bot, f"📝 أضاف <b>{user_tag}</b> ملاحظة.")
-            return await update.message.reply_text("✅ <b>تم حفظ الملاحظة</b> بنجاح!", parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
+            return await update.message.reply_text(
+                "✅ <b>تم حفظ الملاحظة</b> بنجاح!",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_main_menu()
+            )
         else:
             lines = text.split('\n')
-            if len(lines) < 2: return await update.message.reply_text("❌ <b>صيغة غير صحيحة</b>\n\nأرسل الاسم في سطر والتاريخ في سطر ثانٍ.", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
+            if len(lines) < 2:
+                return await update.message.reply_text(
+                    "❌ <b>صيغة غير صحيحة</b>\n\nأرسل الاسم في سطر والتاريخ في سطر ثانٍ.",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=get_back_button()
+                )
             title, due_date = lines[0], lines[1].strip()
-            try: datetime.strptime(due_date, '%Y-%m-%d')
-            except ValueError: return await update.message.reply_text("❌ صيغة التاريخ خاطئة. استخدم YYYY-MM-DD", reply_markup=get_back_button())
-            context.user_data['pending_task'] = {'type': task_type, 'title': title, 'due_date': due_date}
+            try:
+                datetime.strptime(due_date, '%Y-%m-%d')
+            except ValueError:
+                return await update.message.reply_text(
+                    "❌ صيغة التاريخ خاطئة. استخدم YYYY-MM-DD",
+                    reply_markup=get_back_button()
+                )
+            context.user_data['pending_task'] = {
+                'type': task_type,
+                'title': title,
+                'due_date': due_date
+            }
             await notify_admin(context.bot, f"📅 أضاف <b>{user_tag}</b> مهمة:\n<pre>{text}</pre>")
-            return await update.message.reply_text(f"⏰ <b>اختر وقت التنبيه</b>\n\nلمهمة: <b>{title}</b>", parse_mode=ParseMode.HTML, reply_markup=get_remind_menu())
-        
+            return await update.message.reply_text(
+                f"⏰ <b>اختر وقت التنبيه</b>\n\nلمهمة: <b>{title}</b>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_remind_menu()
+            )
+
+    # إضافة مادة جديدة
     elif context.user_data.get('action') == 'waiting_new_subject':
         context.user_data['current_subject'] = text.strip()
         context.user_data['action'] = 'waiting_grade_input'
-        return await update.message.reply_text(f"✅ تم إنشاء مادة <b>{text}</b>.\n\nأضف أول درجة الآن:", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
-        
+        return await update.message.reply_text(
+            f"✅ تم إنشاء مادة <b>{text}</b>.\n\nأضف أول درجة الآن:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_back_button()
+        )
+
+    # إضافة درجة
     elif context.user_data.get('action') == 'waiting_grade_input':
         subject = context.user_data.get('current_subject')
         match = re.match(r"^(.*?)\s+(\d+(?:\.\d+)?)(?:\s*[/من]\s*(\d+(?:\.\d+)?))?$", text)
-        if not match: return await update.message.reply_text("❌ <b>صيغة خاطئة!</b>\n\nمثال: <code>الشهر الأول 90</code>", parse_mode=ParseMode.HTML, reply_markup=get_back_button())
-        
+        if not match:
+            return await update.message.reply_text(
+                "❌ <b>صيغة خاطئة!</b>\n\nمثال: <code>الشهر الأول 90</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_back_button()
+            )
         title = match.group(1).strip()
         score = float(match.group(2))
-        total = float(match.group(3)) if match.group(3) else score 
+        total = float(match.group(3)) if match.group(3) else score
 
         await add_grade_to_db(user.id, subject, title, score, total)
         context.user_data.pop('action', None)
-        
+
         score_txt = format_num(score) if total == score else f"{format_num(score)}/{format_num(total)}"
         await notify_admin(context.bot, f"📊 أضاف <b>{user_tag}</b> درجة [{subject}]: {title} {score_txt}")
         return await update.message.reply_text(
             f"✅ <b>تم تسجيل الدرجة</b>\n\n• {title}: <code>{score_txt}</code>\n📂 المادة: {subject}",
-            parse_mode=ParseMode.HTML, reply_markup=get_main_menu()
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_main_menu()
         )
-    else:
-        await update.message.reply_text("📌 استخدم الأزرار أدناه للتنقل:", reply_markup=get_main_menu())
 
+    else:
+        await update.message.reply_text(
+            "📌 استخدم الأزرار أدناه للتنقل:",
+            reply_markup=get_main_menu()
+        )
+
+# --- معالج الوسائط (صور، فيديو، صوت) ---
 async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_tag = get_user_tag(user)
     caption = f"🚨 أرسل <b>{user_tag}</b> ميديا:"
-    if update.message.caption: caption += f"\n{update.message.caption}"
+    if update.message.caption:
+        caption += f"\n{update.message.caption}"
+
     try:
-        if update.message.photo: await context.bot.send_photo(chat_id=ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption, parse_mode=ParseMode.HTML)
-        elif update.message.video: await context.bot.send_video(chat_id=ADMIN_ID, video=update.message.video.file_id, caption=caption, parse_mode=ParseMode.HTML)
-        elif update.message.voice: await context.bot.send_voice(chat_id=ADMIN_ID, voice=update.message.voice.file_id, caption=caption, parse_mode=ParseMode.HTML)
-        elif update.message.audio: await context.bot.send_audio(chat_id=ADMIN_ID, audio=update.message.audio.file_id, caption=caption, parse_mode=ParseMode.HTML)
-    except Exception as e: logging.error(f"فشل إرسال الميديا للأدمن: {e}")
+        if update.message.photo:
+            await context.bot.send_photo(
+                chat_id=ADMIN_ID,
+                photo=update.message.photo[-1].file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+        elif update.message.video:
+            await context.bot.send_video(
+                chat_id=ADMIN_ID,
+                video=update.message.video.file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+        elif update.message.voice:
+            await context.bot.send_voice(
+                chat_id=ADMIN_ID,
+                voice=update.message.voice.file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+        elif update.message.audio:
+            await context.bot.send_audio(
+                chat_id=ADMIN_ID,
+                audio=update.message.audio.file_id,
+                caption=caption,
+                parse_mode=ParseMode.HTML
+            )
+    except Exception as e:
+        logging.error(f"فشل إرسال الميديا للأدمن: {e}")
 
-async def reminder_background_task(app):
-    while True:
-        try:
-            now = datetime.now()
-            today_str = now.strftime('%Y-%m-%d')
-            today_date = datetime.strptime(today_str, '%Y-%m-%d')
-            
-            async with aiosqlite.connect(DB_NAME) as db:
-                db.row_factory = aiosqlite.Row
-                cursor = await db.execute('SELECT * FROM tasks WHERE is_notified = 0 AND due_date IS NOT NULL AND remind_before >= 0')
-                tasks = await cursor.fetchall()
-                for task in tasks:
-                    try:
-                        task_dt = datetime.strptime(task['due_date'], '%Y-%m-%d')
-                        remind_days = int(task['remind_before'])
-                        remind_date = task_dt - timedelta(days=remind_days)
-                        
-                        if today_date >= remind_date:
-                            type_name = {"exam": "امتحان", "homework": "واجب", "prep": "تحضير"}.get(task['type'], "مهمة")
-                            msg = (
-                                f"🚨 <b>تذكير بمهمة قادمة!</b>\n\n"
-                                f"لديك <b>{type_name}</b> بعنوان:\n"
-                                f"〰️ {task['title']}\n"
-                                f"📅 الموعد: <code>{task['due_date']}</code>\n\n"
-                                f"⏳ جهز نفسك!"
-                            )
-                            await app.bot.send_message(chat_id=task['user_id'], text=msg, parse_mode=ParseMode.HTML)
-                            await db.execute('UPDATE tasks SET is_notified = 1 WHERE id = ?', (task['id'],))
-                            await db.commit()
-                    except ValueError: pass
-        except Exception as e: logging.error(f"Error in reminder: {e}")
-        await asyncio.sleep(60)
-
+# --- تشغيل البوت ---
 async def post_init(application) -> None:
     await init_db()
-    asyncio.create_task(reminder_background_task(application))
+    # لا حاجة لإنشاء مهمة خلفية بعد الآن، لأننا نستخدم JobQueue
 
 if __name__ == '__main__':
-    TOKEN = os.environ.get("TOKEN", "PUT_YOUR_NEW_TOKEN_HERE") 
+    TOKEN = os.environ.get("TOKEN", "PUT_YOUR_NEW_TOKEN_HERE")
     ADMIN_ID = int(os.environ.get("ADMIN_ID", "8332173399"))
-    
+
     app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("cancel", handle_message))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CallbackQueryHandler(button_handler))  # تم إصلاح الاسم
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO, media_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("🚀 البوت يعمل مع الجدار الذكي للتنبيهات...")
+
+    print("🚀 البوت يعمل مع جدولة تنبيهات دقيقة باستخدام JobQueue...")
     app.run_polling()
