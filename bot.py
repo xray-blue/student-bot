@@ -147,7 +147,7 @@ def get_task_types_menu():
         [InlineKeyboardButton("📝 امتحان", callback_data="type_exam"), 
          InlineKeyboardButton("📚 واجب", callback_data="type_homework")],
         [InlineKeyboardButton("📖 تحضير", callback_data="type_prep"), 
-         InlineKeyboardButton("📄 مذكرة", callback_data="type_note")],
+         InlineKeyboardButton("📄 ملاحظة", callback_data="type_note")],
         [InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")]
     ])
 
@@ -173,7 +173,7 @@ def get_welcome_message():
     return (
         "🌟 <b>مرحباً بك في «مفكرتي الذكية»!</b>\n\n"
         "📌 <b>ماذا يمكنني أن أفعل لك؟</b>\n"
-        "• 📝 <b>إضافة مهام</b> (امتحانات، واجبات، تحضيرات، مذكرات)\n"
+        "• 📝 <b>إضافة مهام</b> (امتحانات، واجبات، تحضيرات، ملاحظات)\n"
         "• 📊 <b>تسجيل الدرجات</b> ومتابعة المعدلات\n"
         "• 🔔 <b>التنبيه</b> قبل المواعيد المحددة\n"
         "• 📋 <b>عرض المهام</b> مع فلترة حسب النوع\n"
@@ -295,9 +295,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data in ["type_exam", "type_homework", "type_prep", "type_note"]:
         task_type = data.split("_")[1]
         context.user_data['action'] = f"waiting_for_{task_type}"
-        type_names = {"exam": "امتحان", "homework": "واجب", "prep": "تحضير", "note": "مذكرة"}
+        type_names = {"exam": "امتحان", "homework": "واجب", "prep": "تحضير", "note": "ملاحظة"}
         if task_type == "note":
-            msg = "📄 <b>إضافة مذكرة</b>\n\nأرسل نص المذكرة كاملاً (يمكن أن يكون طويلاً):"
+            msg = "📄 <b>إضافة ملاحظة</b>\n\nأرسل نص الملاحظة كاملاً (يمكن أن يكون طويلاً):"
         else:
             msg = f"📌 <b>إضافة {type_names[task_type]}</b>\n\nأرسل التفاصيل في <b>سطرين</b>:\n• السطر الأول: اسم المادة\n• السطر الثاني: التاريخ (صيغة YYYY-MM-DD)"
         await query.edit_message_text(msg, parse_mode=ParseMode.HTML, reply_markup=get_back_button())
@@ -307,7 +307,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         note = await get_note_by_id(note_id)
         if note:
             await query.message.reply_text(
-                f"📄 <b>المذكرة:</b>\n\n{note['title']}",
+                f"📄 <b>الملاحظة:</b>\n\n{note['title']}",
                 parse_mode=ParseMode.HTML,
                 reply_markup=get_back_button()
             )
@@ -325,7 +325,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("📝 امتحانات", callback_data="tfilter_exam"), 
              InlineKeyboardButton("📚 واجبات", callback_data="tfilter_homework")],
             [InlineKeyboardButton("📖 تحضيرات", callback_data="tfilter_prep"), 
-             InlineKeyboardButton("📄 مذكرات", callback_data="tfilter_note")]
+             InlineKeyboardButton("📄 الملاحظات", callback_data="tfilter_note")]
         ]
         
         if not tasks:
@@ -336,7 +336,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             paginated_tasks = tasks[start_idx : start_idx + ITEMS_PER_PAGE]
             
             if current_filter == "note":
-                response = f"📄 <b>مذكراتك</b> (صفحة {current_page}/{total_pages})\nاضغط لقراءتها:"
+                response = f"📄 <b>ملاحظتك</b> (صفحة {current_page}/{total_pages})\nاضغط لقراءتها:"
                 for t in paginated_tasks:
                     preview = (t['title'][:35] + '...') if len(t['title']) > 35 else t['title']
                     kb.append([InlineKeyboardButton(f"📂 {preview}", callback_data=f"view_note_{t['id']}")])
@@ -647,9 +647,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if task_type == "note": 
             await add_task_to_db(user.id, task_type, text, None, 0)
             context.user_data.pop('action', None)
-            await notify_admin(context.bot, f"📝 أضاف <b>{user_tag}</b> مذكرة طويلة.")
+            await notify_admin(context.bot, f"📝 أضاف <b>{user_tag}</b> ملاحظة طويلة.")
             return await update.message.reply_text(
-                "✅ <b>تم حفظ المذكرة</b> بنجاح!",
+                "✅ <b>تم حفظ الملاحظة</b> بنجاح!",
                 parse_mode=ParseMode.HTML,
                 reply_markup=get_main_menu()
             )
