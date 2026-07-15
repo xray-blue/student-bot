@@ -27,13 +27,20 @@ def format_num(n):
 # --- دوال قاعدة البيانات ---
 async def init_db():
     async with aiosqlite.connect(DB_NAME) as db:
-        await db.execute('''CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, due_date TEXT, is_notified BOOLEAN DEFAULT 0, remind_before INTEGER DEFAULT 24)''')
+        await db.execute('''CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, title TEXT NOT NULL, due_date TEXT, is_notified BOOLEAN DEFAULT 0, remind_before INTEGER DEFAULT 0)''')
         await db.execute('''CREATE TABLE IF NOT EXISTS grades (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, subject TEXT NOT NULL, score REAL NOT NULL, total REAL NOT NULL)''')
         await db.execute('''CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, password_hash TEXT)''')
         try: await db.execute("ALTER TABLE grades ADD COLUMN title TEXT")
         except: pass
-        try: await db.execute("ALTER TABLE tasks ADD COLUMN remind_before INTEGER DEFAULT 24")
+        
+        # --- إصلاح قاعدة البيانات القديمة للتنبيهات ---
+        try:
+            # تغيير القيم القديمة (الساعات) إلى قيم جديدة (الأيام)
+            await db.execute("UPDATE tasks SET remind_before = 0 WHERE remind_before IN (1, 12)") # قبل ساعة أو 12 ساعة -> نفس اليوم
+            await db.execute("UPDATE tasks SET remind_before = 1 WHERE remind_before = 24")     # قبل يوم
+            await db.execute("UPDATE tasks SET remind_before = 3 WHERE remind_before = 72")     # قبل 3 أيام
         except: pass
+        
         await db.commit()
 
 async def get_user_hash(user_id):
@@ -152,10 +159,11 @@ def get_task_types_menu():
         [InlineKeyboardButton("◀️ رجوع", callback_data="menu_main")]
     ])
 
+# ✨ أزرار التنبيه الجديدة (مبنية على الأيام)
 def get_remind_menu():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏳ قبل ساعة", callback_data="remind_1"), InlineKeyboardButton("🕒 قبل 12 ساعة", callback_data="remind_12")],
-        [InlineKeyboardButton("📅 قبل يوم", callback_data="remind_24"), InlineKeyboardButton("📆 قبل 3 أيام", callback_data="remind_72")],
+        [InlineKeyboardButton("🎈 في نفس اليوم", callback_data="remind_0"), InlineKeyboardButton("📅 قبل يوم", callback_data="remind_1")],
+        [InlineKeyboardButton("📆 قبل 3 أيام", callback_data="remind_3"), InlineKeyboardButton("🗓️ قبل أسبوع", callback_data="remind_7")],
         [InlineKeyboardButton("◀️ إلغاء", callback_data="menu_main")]
     ])
 
@@ -321,14 +329,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await delete_task_by_id(int(data.split("_")[-1]))
         await query.edit_message_text("✅ تم حذف المهمة بنجاح!", reply_markup=get_main_menu())
 
+    # ✨ تحديث منطق حفظ التنبيه (بالأيام بدل الساعات)
     elif data.startswith("remind_"):
-        remind_hours = int(data.split("_")[-1])
+        remind_days = int(data.split("_")[1])
         pending = context.user_data.get('pending_task')
         if pending:
-            await add_task_to_db(user.id, pending['type'], pending['title'], pending['due_date'], remind_hours)
+            await add_task_to_db(user.id, pending['type'], pending['title'], pending['due_date'], remind_days)
             context.user_data.pop('pending_task', None)
             type_names = {"exam": "امتحان 📝", "homework": "واجب 📚", "prep": "تحضير 📖"}
-            await query.edit_message_text(f"✅ تم حفظ {type_names[pending['type']]} وسيتم التنبيه قبل <b>{remind_hours}</b> ساعة!", parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
+            day_names = {0: "في نفس اليوم", 1: "قبل يوم", 3: "قبل 3 أيام", 7: "قبل أسبوع"}
+            await query.edit_message_text(f"✅ تم حفظ {type_names[pending['type']]} وسيتم التنبيه <b>{day_names.get(remind_days, '')}</b>!", parse_mode=ParseMode.HTML, reply_markup=get_main_menu())
 
     elif data == "menu_grade":
         subjects = await get_subjects(user.id)
@@ -485,9 +495,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await add_grade_to_db(user.id, subject, title, score, total)
         context.user_data.pop('action', None)
         
-        # استخدام دالة format_num لمنع ظهور 66.0
         score_txt = format_num(score) if total == score else f"{format_num(score)}/{format_num(total)}"
-        
         await notify_admin(context.bot, f"📊 أضاف <b>{user_tag}</b> درجة [{subject}]: {title} {score_txt}")
         return await update.message.reply_text(
             f"✅ <b>تم تسجيل الدرجة</b>\n\n• {title}: <code>{score_txt}</code>\n📂 المادة: {subject}",
@@ -508,34 +516,53 @@ async def media_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif update.message.audio: await context.bot.send_audio(chat_id=ADMIN_ID, audio=update.message.audio.file_id, caption=caption, parse_mode=ParseMode.HTML)
     except Exception as e: logging.error(f"فشل إرسال الميديا للأدمن: {e}")
 
+# ==========================================
+# 🚨 نظام التنبيهات الخفي (مصلح بالكامل)
+# ==========================================
 async def reminder_background_task(app):
     while True:
         try:
             now = datetime.now()
+            # نأخذ تاريخ اليوم فقط (بدون ساعات) للمقارنة العادلة
+            today_str = now.strftime('%Y-%m-%d')
+            today_date = datetime.strptime(today_str, '%Y-%m-%d')
+            
             async with aiosqlite.connect(DB_NAME) as db:
                 db.row_factory = aiosqlite.Row
-                cursor = await db.execute('SELECT * FROM tasks WHERE is_notified = 0 AND due_date IS NOT NULL AND remind_before > 0')
+                cursor = await db.execute('SELECT * FROM tasks WHERE is_notified = 0 AND due_date IS NOT NULL AND remind_before >= 0')
                 tasks = await cursor.fetchall()
                 for task in tasks:
                     try:
                         task_dt = datetime.strptime(task['due_date'], '%Y-%m-%d')
-                        remind_dt = task_dt - timedelta(hours=task['remind_before'])
-                        if now >= remind_dt:
+                        remind_days = int(task['remind_before'])
+                        
+                        # حساب تاريخ التنبيه الصحيح
+                        remind_date = task_dt - timedelta(days=remind_days)
+                        
+                        # إذا وصلنا إلى تاريخ التنبيه (أو تجاوزناه)
+                        if today_date >= remind_date:
                             type_name = {"exam": "امتحان", "homework": "واجب", "prep": "تحضير"}.get(task['type'], "مهمة")
-                            msg = f"🚨 <b>تذكير بمهمة قادمة!</b>\n\nلديك <b>{type_name}</b> بعنوان:\n〰️ {task['title']}\n📅 الموعد: <code>{task['due_date']}</code>\n\n⏳ جهز نفسك!"
+                            msg = (
+                                f"🚨 <b>تذكير بمهمة قادمة!</b>\n\n"
+                                f"لديك <b>{type_name}</b> بعنوان:\n"
+                                f"〰️ {task['title']}\n"
+                                f"📅 الموعد: <code>{task['due_date']}</code>\n\n"
+                                f"⏳ جهز نفسك!"
+                            )
+                            
                             await app.bot.send_message(chat_id=task['user_id'], text=msg, parse_mode=ParseMode.HTML)
                             await db.execute('UPDATE tasks SET is_notified = 1 WHERE id = ?', (task['id'],))
                             await db.commit()
+                            logging.info(f"Sent reminder for task {task['id']} to user {task['user_id']}")
                     except ValueError: pass
         except Exception as e: logging.error(f"Error in reminder: {e}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(60) # فحص كل 60 ثانية
 
 async def post_init(application) -> None:
     await init_db()
     asyncio.create_task(reminder_background_task(application))
 
 if __name__ == '__main__':
-    # سحب التوكن من Railway Variables، وإذا لم يجده يستخدم البديل (لأمانك)
     TOKEN = os.environ.get("TOKEN", "PUT_YOUR_NEW_TOKEN_HERE") 
     ADMIN_ID = int(os.environ.get("ADMIN_ID", "8332173399"))
     
@@ -547,5 +574,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.PHOTO | filters.VIDEO | filters.VOICE | filters.AUDIO, media_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
-    print("🚀 البوت يعمل بواجهة محسنة وجميلة...")
+    print("🚀 البوت يعمل بنظام التنبيهات المصلح...")
     app.run_polling()
